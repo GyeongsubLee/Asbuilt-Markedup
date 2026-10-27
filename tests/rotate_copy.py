@@ -7,10 +7,8 @@ import pymupdf as fitz
 def rotate_copy(src_path: str, dst_path: str, rot: int = 90):
     src = fitz.open(src_path)
     content = fitz.open(src_path)
-    for p in content:  # page content only; annotations are rebuilt below
-        a = p.first_annot
-        while a:
-            a = p.delete_annot(a)
+    for pno in range(len(content)):  # page content only; annotations are rebuilt below
+        content.xref_set_key(content[pno].xref, "Annots", "null")
     out = fitz.open()
     for pno, sp in enumerate(src):
         W, H = sp.rect.width, sp.rect.height

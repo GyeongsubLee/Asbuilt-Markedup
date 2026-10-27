@@ -158,11 +158,12 @@ def open_pdf(path: str, strip_annots: bool = False) -> fitz.Document:
     if doc.needs_pass:
         doc.authenticate("")
     if strip_annots:
-        for page in doc:
-            annot = page.first_annot
-            while annot:
-                try:
-                    annot = page.delete_annot(annot)
-                except Exception:
-                    annot = annot.next
+        _strip_annots(doc)
     return doc
+
+
+def _strip_annots(doc: fitz.Document):
+    """Drop every page's /Annots array (in memory). Deleting annotations one by one
+    with delete_annot() breaks on some PyMuPDF versions (1.26.x)."""
+    for pno in range(len(doc)):
+        doc.xref_set_key(doc[pno].xref, "Annots", "null")
