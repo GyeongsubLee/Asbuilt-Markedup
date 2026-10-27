@@ -150,6 +150,36 @@ def make_markup(path):
     a = page.add_freetext_annot(fitz.Rect(155, 304, 176, 316), "FW5", fontsize=7)
     a.update()
     a = page.add_line_annot(fitz.Point(180, 312), fitz.Point(240, 330)); a.set_colors(stroke=RED); a.update()
+    # 10) signature pasted as an image inside a Square annotation (Bluebeam style)
+    tmp = doc.new_page(width=100, height=100)
+    sig = fitz.Pixmap(fitz.csRGB, fitz.IRect(0, 0, 60, 30), 0)
+    sig.set_rect(sig.irect, (255, 255, 255))
+    sig.set_rect(fitz.IRect(5, 14, 55, 17), (0, 0, 0))
+    tmp.insert_image(fitz.Rect(0, 0, 60, 30), pixmap=sig)
+    img_xref = tmp.get_images()[0][0]
+    tmp_no = tmp.number
+    page = doc[0]
+    a = page.add_rect_annot(fitz.Rect(300, 690, 360, 715))
+    form = doc.get_new_xref()
+    doc.update_object(form, "<</Type/XObject/Subtype/Form/BBox[0 0 60 25]"
+                            f"/Resources<</XObject<</Im1 {img_xref} 0 R>>>>>>")
+    doc.update_stream(form, b"q 60 0 0 25 0 0 cm /Im1 Do Q")
+    doc.xref_set_key(a.xref, "AP", f"<</N {form} 0 R>>")
+    doc.delete_page(tmp_no)
+    page = doc[0]
+    # 11) weld symbol drawn with vectors (split circle, F over 3) highlighted by a red cloud,
+    #     next to an ordinary item-number bubble that must NOT be treated as a weld
+    cx, cy = 650, 420
+    page.draw_circle((cx, cy), 9, width=0.6)
+    page.draw_line((cx - 9, cy), (cx + 9, cy), width=0.6)
+    page.draw_polyline([(cx + 2, cy - 7), (cx - 2, cy - 7), (cx - 2, cy - 2)], width=0.5)   # "F"
+    page.draw_polyline([(cx - 2, cy + 2), (cx + 2, cy + 2), (cx, cy + 4), (cx + 2, cy + 7), (cx - 2, cy + 7)],
+                       width=0.5)                                                           # "3"
+    a = page.add_polygon_annot([(cx - 15, cy - 15), (cx + 15, cy - 15), (cx + 15, cy + 15), (cx - 15, cy + 15),
+                                (cx - 15, cy - 15)])
+    a.set_colors(stroke=RED, fill=(1, 0.6, 0.6)); a.set_opacity(0.5); a.set_border(width=1, clouds=1); a.update()
+    page.draw_circle((720, 420), 9, width=0.6)                                              # item bubble
+    a = page.add_circle_annot(fitz.Rect(705, 405, 735, 435)); a.set_colors(stroke=RED); a.update()
     # 8) AutoCAD SHX helper annotation (must be ignored)
     a = page.add_rect_annot(fitz.Rect(40, 20, 80, 30)); a.set_info(subject="AutoCAD SHX Text", content="N")
     a.set_opacity(0); a.update()

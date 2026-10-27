@@ -192,6 +192,39 @@ def _freetext_geometry(doc: fitz.Document, annot: fitz.Annot):
     return disp_rect(page, box), (disp_point(page, anchor) if anchor is not None else None)
 
 
+_REF_RE = re.compile(r"(\d+)\s+0\s+R")
+
+
+def _form_has_image(doc: fitz.Document, xref: int, depth: int = 0) -> bool:
+    if depth > 3:
+        return False
+    kind, val = doc.xref_get_key(xref, "Resources/XObject")
+    if kind == "xref":  # indirect resources dictionary
+        val = doc.xref_object(int(_REF_RE.search(val).group(1)), compressed=True)
+    for ref in _REF_RE.findall(val or ""):
+        sub = doc.xref_get_key(int(ref), "Subtype")[1]
+        if sub == "/Image":
+            return True
+        if sub == "/Form" and _form_has_image(doc, int(ref), depth + 1):
+            return True
+    try:
+        stream = doc.xref_stream(xref) or b""
+        return b"\nBI" in stream or stream.startswith(b"BI")  # inline image
+    except Exception:
+        return False
+
+
+def _has_image_appearance(doc: fitz.Document, annot: fitz.Annot) -> bool:
+    """Pasted signature images are stored as Square / Stamp / Polygon ... annotations
+    whose appearance stream draws a picture."""
+    try:
+        kind, val = doc.xref_get_key(annot.xref, "AP/N")
+        m = _REF_RE.search(val or "") if kind == "xref" else None
+        return bool(m) and _form_has_image(doc, int(m.group(1)))
+    except Exception:
+        return False
+
+
 def _collect_annotations(page: fitz.Page, base_words, opts: Options):
     texts, strikes, shapes, leaders = [], [], [], []
     doc = page.parent
@@ -252,6 +285,8 @@ def _collect_annotations(page: fitz.Page, base_words, opts: Options):
                 shapes.append(ShapeMark("sign", rect, "Stamp", author))
                 if text:
                     texts.append(TextMark(text, rect, rc(rect), [], "Stamp", author, used=True))
+            elif tname not in ("Ink", "FreeText") and not text and _has_image_appearance(doc, annot):
+                shapes.append(ShapeMark("sign", rect, tname + " image", author))
             elif tname in ENCLOSE_TYPES:
                 r = fitz.Rect(rect)
                 if tname in ("Polygon", "PolyLine") and annot.vertices:
@@ -295,7 +330,34 @@ def _collect_annotations(page: fitz.Page, base_words, opts: Options):
 
 
 # --------------------------------------------------------------------------- flattened
-def _collect_flattened(page: fitz.Page, words, base_words):
+def _find_weld_symbols(page: fitz.Page, drawings) -> list:
+    """Field-weld symbols in the drawing: a small circle split by a horizontal line
+    with "F" above and the weld no. below (often drawn as vectors, not text)."""
+    circles, hlines = [], []
+    for d in drawings:
+        items = d.get("items", [])
+        r = disp_rect(page, d["rect"])
+        n_c = sum(1 for it in items if it[0] == "c")
+        n_l = sum(1 for it in items if it[0] == "l")
+        if 5 <= r.width <= 45 and 0.75 <= r.width / max(r.height, 0.1) <= 1.33 and (n_c >= 4 or n_l >= 12):
+            circles.append(r)
+        for it in items:
+            if it[0] == "l":
+                p0, p1 = disp_point(page, it[1]), disp_point(page, it[2])
+                if abs(p0.y - p1.y) < 0.6 and abs(p1.x - p0.x) >= 3:
+                    hlines.append((min(p0.x, p1.x), max(p0.x, p1.x), (p0.y + p1.y) / 2))
+    out = []
+    for c in circles:
+        cy = (c.y0 + c.y1) / 2
+        for x0, x1, y in hlines:
+            if abs(y - cy) <= c.height * 0.2 and x1 - x0 >= c.width * 0.6 \
+                    and x0 >= c.x0 - 1.5 and x1 <= c.x1 + 1.5:
+                out.append(c)
+                break
+    return out
+
+
+def _collect_flattened(page: fitz.Page, words, base_words, drawings):
     texts, strikes, shapes = [], [], []
     colored = [w for w in words if is_markup_color(w.color)]
     lines: dict = {}
@@ -306,10 +368,6 @@ def _collect_flattened(page: fitz.Page, words, base_words):
         covered = [b for b in _words_in_rect(base_words, box, 0.5)]
         texts.append(TextMark(" ".join(w.text for w in ws), box, rc(box), covered, "Flattened text"))
 
-    try:
-        drawings = page.get_drawings()
-    except Exception:
-        drawings = []
     for d in drawings:
         col = d.get("color") or d.get("fill")
         if not is_markup_color(col):
@@ -354,8 +412,13 @@ def extract_markups(page: fitz.Page, content_page: fitz.Page, page_no: int, all_
     all_words = [w for w in all_words if w.norm]
     base_words = [w for w in all_words if not is_markup_color(w.color)]
     texts, strikes, shapes = _collect_annotations(page, base_words, opts)
+    try:
+        drawings = content_page.get_drawings()
+    except Exception:
+        drawings = []
+    weld_symbols = _find_weld_symbols(content_page, drawings)
     if opts.detect_flattened:
-        t2, s2, sh2 = _collect_flattened(content_page, all_words, base_words)
+        t2, s2, sh2 = _collect_flattened(content_page, all_words, base_words, drawings)
         texts += t2
         strikes += s2
         shapes += sh2
@@ -430,7 +493,7 @@ def extract_markups(page: fitz.Page, content_page: fitz.Page, page_no: int, all_
 
     # drop shapes nested inside another enclose shape of the same kind (cloud + inner circle)
     items = _dedupe_shapes(items)
-    items = _drop_ignored(items)
+    items = _drop_ignored(items, weld_symbols)
     for it in items:
         _context(it, lines)
     return items
@@ -444,11 +507,13 @@ def _is_weld(item: MarkupItem) -> bool:
     if item.new_text:
         return bool(_WELD_RE.match(item.new_text.strip()))
     if item.kind == "enclose" and item.enclosed_words:
-        return all(_WELD_RE.match(w.text) for w in item.enclosed_words)
+        # "F" and "3" are separate words in a split weld circle
+        joined = "".join(w.text for w in item.enclosed_words)
+        return bool(_WELD_RE.match(joined)) or all(_WELD_RE.match(w.text) for w in item.enclosed_words)
     return False
 
 
-def _drop_ignored(items):
+def _drop_ignored(items, weld_symbols=()):
     """Remove signatures (ink + the box / name stamp around it) and weld-number circles."""
     def grow(r, d):
         return fitz.Rect(r.x0 - d, r.y0 - d, r.x1 + d, r.y1 + d)
@@ -466,6 +531,9 @@ def _drop_ignored(items):
             continue
         if it.kind in ("visual", "enclose") and any(z.contains(it.rect) for z in weld_zones):
             continue  # the red circle itself
+        if it.kind in ("visual", "enclose") and any(
+                it.rect.contains(rc(c)) and it.rect.get_area() <= 30 * c.get_area() for c in weld_symbols):
+            continue  # red circle / cloud drawn only around a weld symbol
         if it.source.startswith("Line") and it.kind == "delete" and any(z.intersects(it.rect) for z in weld_zones):
             continue  # leader line from the weld circle that happens to cross a text
         out.append(it)
