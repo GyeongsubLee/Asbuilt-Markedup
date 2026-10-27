@@ -59,3 +59,9 @@ VISUAL = "육안확인"
 INFO = "참고"
 
 STATUS_ORDER = {NG: 0, CHECK: 1, VISUAL: 2, OK: 3, INFO: 4}
+
+# Mark-ups that are not QC items and are left out of the report completely
+# - signature / review stamps, e.g. "PIPING FE HS.JEONG", "REV.3A, 2026-04-14 PIPING FE YOO S.H"
+SIGN_TEXT_PATTERNS = (r"PIPING\s+FE\b", r"\bREV\.?\s*\d+[A-Z]?\s*,\s*\d{4}-\d{2}-\d{2}")
+# - weld numbers written in / circled by a red circle, e.g. "FW5", "F12", "F11S1"
+WELD_TEXT_PATTERN = r"^F[A-Z]{0,2}\s*-?\d+[A-Z0-9]*$"

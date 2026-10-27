@@ -65,6 +65,15 @@ def _style_row(ws, row, status_col=None, status=None, wrap_cols=()):
         ws.cell(row=row, column=status_col).fill = PatternFill("solid", fgColor=FILL[status])
 
 
+def _note(r) -> str:
+    parts = []
+    if r.get("error"):
+        parts.append(r["error"])
+    if r.get("ignored"):
+        parts.append(f"Title/REV 영역 {r['ignored']}건 제외")
+    return " / ".join(parts)
+
+
 def write_excel(results, markup_only, asbuilt_only, dups, out_dir, meta) -> str:
     wb = Workbook()
     ws = wb.active
@@ -80,7 +89,7 @@ def write_excel(results, markup_only, asbuilt_only, dups, out_dir, meta) -> str:
                    _region_verdict(r["items"], "Line Condition"), _region_verdict(r["items"], "BOM"),
                    c[C.OK], c[C.NG], c[C.CHECK], c[C.VISUAL], c[C.INFO],
                    os.path.basename(r["markup"]), os.path.basename(r["asbuilt"] or ""),
-                   r.get("align", ""), r.get("error", ""), "보기"])
+                   r.get("align", ""), _note(r), "보기"])
         row = ws.max_row
         _style_row(ws, row, 3, v, wrap_cols=(15,))
         link = ws.cell(row=row, column=16)
@@ -164,11 +173,23 @@ th{background:var(--inb);position:sticky;top:0}.wrap{overflow-x:auto}
 .s-반영,.s-OK{background:var(--okb);color:var(--ok)}.s-미반영,.s-NG,.s-오류{background:var(--ngb);color:var(--ng)}
 .s-확인필요{background:var(--ckb);color:var(--ck)}.s-육안확인{background:var(--vib);color:var(--vi)}
 .s-참고,.s-Mark-up{background:var(--inb);color:var(--in)}
-img{max-width:420px;width:100%;border:1px solid var(--line);border-radius:4px;background:#fff}
-.imgs{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:560px}.imgs small{color:var(--mut)}
+img{max-width:100%;border:1px solid var(--line);border-radius:4px;background:#fff}
+.imgs{display:grid;grid-template-columns:1fr 1fr;gap:8px;min-width:560px;max-width:900px}
+.imgs.wide{grid-template-columns:1fr}.imgs small{color:var(--mut)}
 input{padding:6px 10px;border:1px solid var(--line);border-radius:6px;background:var(--card);color:var(--ink);
 width:min(360px,100%);margin-bottom:10px}a{color:var(--vi)}
 """
+
+
+def _is_wide(png_path: str) -> bool:
+    """Wide crops (e.g. the line-condition table) are stacked instead of side by side."""
+    try:
+        with open(png_path, "rb") as f:
+            head = f.read(24)
+        w, h = int.from_bytes(head[16:20], "big"), int.from_bytes(head[20:24], "big")
+        return w > 2.2 * h
+    except Exception:
+        return False
 
 
 def _badge(s):
@@ -186,12 +207,17 @@ def write_html(results, out_dir, meta) -> str:
         for i in r["items"]:
             mk = f'<img loading="lazy" src="../{_rel(i["img_mk"], out_dir)}">' if i["img_mk"] else ""
             ab = f'<img loading="lazy" src="../{_rel(i["img_ab"], out_dir)}">' if i["img_ab"] else ""
+            wide = _is_wide(i["img_mk"])
+            imgs = (f"<div class='imgs{' wide' if wide else ''}'><div><small>MARK-UP</small>{mk}</div>"
+                    f"<div><small>AS-BUILT</small>{ab}</div></div>")
+            if i["img_mk"] and not i.get("img_first", True):
+                imgs = f"<small>↑ #{i.get('img_ref')} 이미지에 함께 표시</small>"
             rows.append(
                 f"<tr><td>{i['no']}</td><td>{html.escape(i['region'])}<br><small>{html.escape(i['field'])}</small></td>"
                 f"<td>{html.escape(i['kind'])}<br><small>{html.escape(i['source'])}</small></td>"
                 f"<td>{html.escape(i['old'])}</td><td><b>{html.escape(i['new'])}</b></td>"
                 f"<td>{html.escape(i['asbuilt'])}</td><td>{_badge(i['status'])}<br><small>{html.escape(i['reason'])}</small></td>"
-                f"<td><div class='imgs'><div><small>MARK-UP</small>{mk}</div><div><small>AS-BUILT</small>{ab}</div></div></td></tr>")
+                f"<td>{imgs}</td></tr>")
         err = f"<p class='s s-오류'>{html.escape(r['error'])}</p>" if r.get("error") else ""
         page = (f"<!doctype html><html lang='ko'><head><meta charset='utf-8'>"
                 f"<meta name='viewport' content='width=device-width,initial-scale=1'><title>{html.escape(r['iso'])}</title>"

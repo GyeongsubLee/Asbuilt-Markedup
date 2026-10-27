@@ -49,6 +49,11 @@ def test_samples():
     assert summary["ISO-1TC-PL-2302-30-027-01"] == "NG"
     for key, st in ng.items():
         assert rot.get(key) == st, (key, rot)
+    # signature box, REV NO and weld circle never appear
+    for iso in ("ISO-1TC-PL-2302-30-024-01", "ISO-1TC-PL-2302-30-025-01"):
+        texts = " ".join(f"{o} {n}" for _, o, n, _ in detail[iso])
+        assert "PIPING" not in texts and "FW5" not in texts and "34" not in texts.split(), texts
+        assert len(detail[iso]) == 7, detail[iso]
     # SHX helper annotations and the signature never become checked items
     assert all(st != "미반영" for _, _, _, st in detail["ISO-1TC-PL-2302-30-024-01"])
 

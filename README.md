@@ -61,7 +61,13 @@ Mark-up 은 PDF 주석(FreeText, StrikeOut, Line, Ink, Polygon(구름), Square/C
 | 삭선만 | 삭제 | 기존값이 남아 있으면 미반영 |
 | 새 글자만 | 추가 | 근처에 있으면 반영 |
 | 글자 없는 구름/원 | 형상 변경 | **육안확인** (이미지 제공) |
-| 서명/스탬프, Title/Revision 영역 | – | 참고 (판정 제외) |
+| 서명 박스 (Ink 서명 + 둘레 박스 + `PIPING FE …` 문구) | – | 보고서에서 **제외** |
+| 우측 하단 Title/REV 영역 (REV NO 등) | – | **제외** (요약 비고에 제외 건수 표시) |
+| 용접 번호 원 (`FW5`, `F12` … F 로 시작하는 번호) | – | **제외** |
+
+제외 문구 규칙은 `isoqc/config.py` 의 `SIGN_TEXT_PATTERNS`, `WELD_TEXT_PATTERN` 에서 바꿀 수 있습니다.
+
+비교 이미지는 가까운 Mark-up 끼리 한 장으로 묶고, Line Condition 항목은 표 한 장에 모두 표시합니다.
 
 두 도면은 공통 문자(표제란, BOM, Note 등)로 좌표를 자동 정렬하므로 As-built 를 다시 출력해 크기/위치가 조금 달라도 됩니다.
 숫자는 `65` = `65.0`, 대소문자 무시로 비교합니다.

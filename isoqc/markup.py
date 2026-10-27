@@ -15,11 +15,12 @@ Every primitive is then combined into MarkupItems:
 from __future__ import annotations
 
 import math
+import re
 from dataclasses import dataclass, field
 
 import pymupdf as fitz
 
-from .config import Options
+from .config import SIGN_TEXT_PATTERNS, WELD_TEXT_PATTERN, Options
 from .pdftext import disp_point, disp_rect, group_lines, is_markup_color, is_shx_annot, rc, tokens
 
 SKIP_TYPES = {"Link", "Widget", "Popup", "FileAttachment", "Sound", "Movie",
@@ -429,9 +430,46 @@ def extract_markups(page: fitz.Page, content_page: fitz.Page, page_no: int, all_
 
     # drop shapes nested inside another enclose shape of the same kind (cloud + inner circle)
     items = _dedupe_shapes(items)
+    items = _drop_ignored(items)
     for it in items:
         _context(it, lines)
     return items
+
+
+_SIGN_RE = [re.compile(p, re.I) for p in SIGN_TEXT_PATTERNS]
+_WELD_RE = re.compile(WELD_TEXT_PATTERN, re.I)
+
+
+def _is_weld(item: MarkupItem) -> bool:
+    if item.new_text:
+        return bool(_WELD_RE.match(item.new_text.strip()))
+    if item.kind == "enclose" and item.enclosed_words:
+        return all(_WELD_RE.match(w.text) for w in item.enclosed_words)
+    return False
+
+
+def _drop_ignored(items):
+    """Remove signatures (ink + the box / name stamp around it) and weld-number circles."""
+    def grow(r, d):
+        return fitz.Rect(r.x0 - d, r.y0 - d, r.x1 + d, r.y1 + d)
+
+    sign_zones = [grow(i.rect, 15) for i in items if i.kind == "sign"
+                  or any(p.search(i.new_text or "") for p in _SIGN_RE)]
+    weld_zones = [grow(i.rect, 10) for i in items if _is_weld(i)]
+    out = []
+    for it in items:
+        if it.kind == "sign" or any(p.search(it.new_text or "") for p in _SIGN_RE):
+            continue
+        if it.kind in ("enclose", "visual", "add") and any(z.intersects(it.rect) for z in sign_zones):
+            continue
+        if _is_weld(it):
+            continue
+        if it.kind in ("visual", "enclose") and any(z.contains(it.rect) for z in weld_zones):
+            continue  # the red circle itself
+        if it.source.startswith("Line") and it.kind == "delete" and any(z.intersects(it.rect) for z in weld_zones):
+            continue  # leader line from the weld circle that happens to cross a text
+        out.append(it)
+    return out
 
 
 def _dedupe_shapes(items):

@@ -12,7 +12,7 @@ from .compare import AsBuiltIndex, check_item
 from .config import Options
 from .markup import extract_markups
 from .pdftext import is_markup_color, open_pdf, page_words, shx_words
-from .regions import CONDITION, REGION_LABEL, condition_field, detect_layout
+from .regions import CONDITION, REGION_LABEL, TITLE, condition_field, detect_layout
 
 KIND_LABEL = {
     "replace": "변경(삭선/덮어쓰기)",
@@ -64,9 +64,62 @@ def _pad(r: fitz.Rect, pad: float, min_w=260.0, min_h=120.0) -> fitz.Rect:
     return r
 
 
+MAX_GROUP_W, MAX_GROUP_H = 560.0, 400.0
+
+
+def _group_items(items, pad):
+    """Cluster nearby mark-ups so that one image pair shows several of them.
+    All line-condition items share one image."""
+    groups = []  # [clip, [indexes]]
+    cond = [i for i, it in enumerate(items) if it.region == CONDITION]
+    if cond:
+        clip = None
+        for i in cond:
+            r = _pad(items[i].rect, pad * 0.5, min_w=120, min_h=60)
+            clip = r if clip is None else clip | r
+        groups.append([clip, cond])
+    for i, it in enumerate(items):
+        if it.region == CONDITION:
+            continue
+        r = _pad(it.rect, pad)
+        for g in groups[1 if cond else 0:]:
+            u = g[0] | r
+            if g[0].intersects(r) and u.width <= MAX_GROUP_W and u.height <= MAX_GROUP_H:
+                g[0] = u
+                g[1].append(i)
+                break
+        else:
+            groups.append([r, [i]])
+    return groups
+
+
+def _write_group_images(items, checks, rows, mk_page, ab_page, T, img_dir, prefix, img_no, opts):
+    for clip, idx in _group_items(items, opts.image_pad):
+        img_no += 1
+        ab_clip = T.rect(clip)
+        for i in idx:
+            if checks[i].area is not None and items[i].region != CONDITION:
+                a = checks[i].area
+                # keep the as-built search area in view, but never let one item blow the image up
+                if (ab_clip | a).width <= MAX_GROUP_W * 1.3 and (ab_clip | a).height <= MAX_GROUP_H * 1.3:
+                    ab_clip |= a
+        name = f"{prefix}{img_no:02d}"
+        mk = _crop(mk_page, clip, os.path.join(img_dir, name + "_markup.png"), opts.image_zoom, True,
+                   [([w.rect for i in idx for w in items[i].old_words], (255, 0, 255))])
+        ab = _crop(ab_page, ab_clip, os.path.join(img_dir, name + "_asbuilt.png"), opts.image_zoom, False,
+                   [([r for i in idx for r in checks[i].new_hits], (0, 170, 0)),
+                    ([r for i in idx for r in checks[i].old_hits], (230, 0, 0))])
+        first = min(idx)
+        for i in idx:
+            rows[i]["img_mk"], rows[i]["img_ab"] = mk, ab
+            rows[i]["img_first"] = i == first
+            rows[i]["img_ref"] = rows[first]["no"]
+    return img_no
+
+
 def process_pair(key: str, markup_path: str, asbuilt_path: str, out_dir: str, opts: Options) -> dict:
     res = {"iso": key, "markup": markup_path, "asbuilt": asbuilt_path, "items": [],
-           "error": "", "align": ""}
+           "error": "", "align": "", "ignored": 0}
     try:
         mk_doc = open_pdf(markup_path)
         ab_doc = open_pdf(asbuilt_path)
@@ -76,6 +129,7 @@ def process_pair(key: str, markup_path: str, asbuilt_path: str, out_dir: str, op
         if opts.images:
             os.makedirs(img_dir, exist_ok=True)
         n = 0
+        img_no = 0
         aligns = []
         for pno, mk_page in enumerate(mk_doc):
             ab_pno = min(pno, len(ab_doc) - 1)
@@ -95,18 +149,25 @@ def process_pair(key: str, markup_path: str, asbuilt_path: str, out_dir: str, op
             index = AsBuiltIndex(ab_words, ab_page.rect)
 
             items = extract_markups(mk_page, mk_content[pno], pno, mk_words, opts)
+            kept = []
             for it in items:
                 it.region = layout.region_of(it.anchor)
+                if it.region == TITLE:  # revision no. / title block differ by design
+                    res["ignored"] += 1
+                    continue
                 if it.region == CONDITION:
                     src = it.old_words[0].rect if it.old_words else (
                         it.enclosed_words[0].rect if it.enclosed_words else it.rect)
                     it.field_name = condition_field(src, layout, base_mk)
-            items.sort(key=lambda i: (i.region != CONDITION, i.anchor.y, i.anchor.x))
+                kept.append(it)
+            items = sorted(kept, key=lambda i: (i.region != CONDITION, i.anchor.y, i.anchor.x))
 
+            rows, checks = [], []
             for it in items:
                 n += 1
                 chk = check_item(it, T, index, base_mk_tokens, opts)
-                row = {
+                checks.append(chk)
+                rows.append({
                     "no": n,
                     "page": pno + 1,
                     "region": REGION_LABEL.get(it.region, it.region),
@@ -121,19 +182,12 @@ def process_pair(key: str, markup_path: str, asbuilt_path: str, out_dir: str, op
                     "reason": chk.reason,
                     "img_mk": "",
                     "img_ab": "",
-                }
-                if opts.images:
-                    clip = _pad(it.rect, opts.image_pad)
-                    row["img_mk"] = _crop(mk_page, clip, os.path.join(img_dir, f"{n:03d}_markup.png"),
-                                          opts.image_zoom, True,
-                                          [([w.rect for w in it.old_words], (255, 0, 255))])
-                    if chk.status != C.INFO:
-                        ab_clip = _pad(chk.area if chk.area is not None else T.rect(it.rect), 10)
-                        ab_clip |= _pad(T.rect(clip), 0)
-                        row["img_ab"] = _crop(ab_page, ab_clip, os.path.join(img_dir, f"{n:03d}_asbuilt.png"),
-                                              opts.image_zoom, False,
-                                              [(chk.new_hits, (0, 170, 0)), (chk.old_hits, (230, 0, 0))])
-                res["items"].append(row)
+                    "img_first": True,
+                })
+            if opts.images and items:
+                img_no = _write_group_images(items, checks, rows, mk_page, ab_page, T, img_dir,
+                                             f"p{pno + 1}_" if len(mk_doc) > 1 else "", img_no, opts)
+            res["items"] += rows
         res["align"] = " / ".join(aligns)
         for d in (mk_doc, ab_doc, mk_content, ab_content):
             d.close()
