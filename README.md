@@ -21,7 +21,16 @@ CIMS MARK-UP ISO 의 수정사항이 AS-BUILT ISO 에 반영되었는지 자동�
    - `ISO_QC_Report.html` – 검색 가능한 목록 → ISO 별 페이지에서 MARK-UP / AS-BUILT 비교 이미지 확인 (초록=변경값 찾음, 빨강=기존값/불일치)
    - `errors.log` – 열리지 않은 PDF 등
 
-Python 으로 실행: `pip install -r requirements.txt` 후 `python iso_qc.py --base "작업폴더"`
+### Python 으로 바로 실행 (권장)
+
+```
+pip install -r requirements.txt          (처음 한 번)
+python iso_qc.py --base "C:\샤힌QC"      (작업폴더 지정)
+python iso_qc.py                          (작업폴더에서 실행하면 --base 생략 가능)
+```
+
+`--base` 를 생략하면 현재 폴더 → `iso_qc.py` 가 있는 폴더 순서로 MARK-UP / AS-BUILT 폴더를 찾습니다.
+`build_exe.bat` / `run_qc.bat` 는 Python 이 없는 PC 에 배포할 때만 필요합니다.
 
 주요 옵션
 

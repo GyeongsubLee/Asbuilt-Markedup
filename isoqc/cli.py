@@ -51,6 +51,13 @@ def main(argv=None) -> int:
     args = parse_args(argv)
     base = os.path.abspath(args.base or _program_dir())
     markup_dir, asbuilt_dir = find_dirs(base)
+    if not args.base and not (markup_dir and asbuilt_dir):
+        # "python C:\tools\iso_qc.py" run from elsewhere: also try the script's folder
+        script_dir = os.path.dirname(os.path.abspath(sys.argv[0] or "."))
+        if script_dir != base:
+            found = find_dirs(script_dir)
+            if found[0] and found[1]:
+                base, (markup_dir, asbuilt_dir) = script_dir, found
     markup_dir = args.markup_dir or markup_dir
     asbuilt_dir = args.asbuilt_dir or asbuilt_dir
     pause = getattr(sys, "frozen", False) and not args.no_pause
