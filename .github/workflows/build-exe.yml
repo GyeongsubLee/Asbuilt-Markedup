@@ -40,6 +40,8 @@ jobs:
           ./ISO_QC.exe --no-pause --workers 2
           if ($LASTEXITCODE -ne 0) { exit 1 }
           if (-not (Get-ChildItem QC_REPORT_*/ISO_QC_Report.xlsx)) { exit 1 }
+          $log = Get-Content (Get-ChildItem QC_REPORT_*/errors.log) -Raw
+          if ($log) { Write-Output $log; Write-Error "exe reported errors"; exit 1 }
           Pop-Location
 
       - uses: actions/upload-artifact@v4

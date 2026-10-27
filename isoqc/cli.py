@@ -9,6 +9,8 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
+import pymupdf as fitz
+
 from . import __version__
 from .config import Options
 from .discover import find_dirs, pair_files
@@ -20,6 +22,13 @@ def _program_dir() -> str:
     if getattr(sys, "frozen", False):
         return os.path.dirname(sys.executable)
     return os.getcwd()
+
+
+def _progress(n: int, total: int, r: dict):
+    line = f"[{n}/{total}] {r['iso']}: {verdict(r)}"
+    if r.get("error"):
+        line += f"  ({r['error'][:150]})"
+    print(line, flush=True)
 
 
 def parse_args(argv=None):
@@ -82,7 +91,7 @@ def main(argv=None) -> int:
 
     out = args.out or os.path.join(base, "QC_REPORT_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
     os.makedirs(out, exist_ok=True)
-    print(f"ISO Mark-up QC v{__version__}")
+    print(f"ISO Mark-up QC v{__version__} (PyMuPDF {fitz.VersionBind})")
     print(f"MARK-UP  폴더: {markup_dir}")
     print(f"AS-BUILT 폴더: {asbuilt_dir}")
     print(f"매칭 {len(pairs)}건 · As-built 없음 {len(markup_only)}건 · Mark-up 없음 {len(asbuilt_only)}건")
@@ -95,14 +104,14 @@ def main(argv=None) -> int:
         for n, (k, m, a) in enumerate(pairs, 1):
             r = process_pair(k, m, a, out, opts)
             results.append(r)
-            print(f"[{n}/{len(pairs)}] {k}: {verdict(r)}")
+            _progress(n, len(pairs), r)
     else:
         with ProcessPoolExecutor(max_workers=workers) as ex:
             futs = {ex.submit(process_pair, k, m, a, out, opts): k for k, m, a in pairs}
             for n, f in enumerate(as_completed(futs), 1):
                 r = f.result()
                 results.append(r)
-                print(f"[{n}/{len(pairs)}] {r['iso']}: {verdict(r)}")
+                _progress(n, len(pairs), r)
 
     results.sort(key=lambda r: (r["iso"], r["markup"]))
     for r in results:
@@ -114,6 +123,8 @@ def main(argv=None) -> int:
         "AS-BUILT 폴더": asbuilt_dir,
         "매칭 건수": len(pairs),
         "소요 시간(초)": round(time.time() - t0, 1),
+        "버전": f"ISO QC {__version__} / PyMuPDF {fitz.VersionBind} / Python {sys.version.split()[0]}"
+                + (" / exe" if getattr(sys, "frozen", False) else ""),
         "옵션": f"near={opts.near_ratio}, flattened={opts.detect_flattened}, shx_text={opts.use_shx_text}",
     }
     xlsx = write_excel(results, markup_only, asbuilt_only, dups, out, meta)
