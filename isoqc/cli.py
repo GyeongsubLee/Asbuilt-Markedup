@@ -9,6 +9,7 @@ import time
 from concurrent.futures import ProcessPoolExecutor, as_completed
 from datetime import datetime
 
+from . import __version__
 from .config import Options
 from .discover import find_dirs, pair_files
 from .process import _safe, process_pair, verdict
@@ -81,6 +82,7 @@ def main(argv=None) -> int:
 
     out = args.out or os.path.join(base, "QC_REPORT_" + datetime.now().strftime("%Y%m%d_%H%M%S"))
     os.makedirs(out, exist_ok=True)
+    print(f"ISO Mark-up QC v{__version__}")
     print(f"MARK-UP  폴더: {markup_dir}")
     print(f"AS-BUILT 폴더: {asbuilt_dir}")
     print(f"매칭 {len(pairs)}건 · As-built 없음 {len(markup_only)}건 · Mark-up 없음 {len(asbuilt_only)}건")

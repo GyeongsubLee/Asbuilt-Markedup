@@ -46,7 +46,18 @@ python iso_qc.py                          (작업폴더에서 실행하면 --bas
 | `--use-shx-text` | As-built 에 실제 문자가 없고 'AutoCAD SHX Text' 주석에만 문자가 있을 때 사용 (기본은 무시) |
 | `--no-flattened` | 색상 문자/선 검출 끄기 (주석이 아닌, 페이지에 합쳐진 Mark-up 검출) |
 
-Windows exe 만들기: `build_exe.bat` 실행 → `dist\ISO_QC.exe`
+## exe 배포
+
+**방법 1 – GitHub 에서 자동 빌드 (PC 에 Python 불필요)**
+1. GitHub 저장소 → **Actions** → **Build Windows exe** → **Run workflow** (브랜치 선택) 클릭
+2. 5분쯤 뒤 완료된 실행을 열고 아래 **Artifacts → ISO_QC** 를 내려받아 압축 해제 → `ISO_QC.exe`
+   (빌드 전에 샘플 시험 + exe 실행 시험까지 자동으로 합니다)
+3. `v1.0.0` 같은 태그를 push 하면 Releases 페이지에 `ISO_QC.exe` 가 첨부됩니다.
+
+**방법 2 – 내 PC 에서 빌드**: Python 3.10 이상 설치 후 `build_exe.bat` 더블클릭 → `dist\ISO_QC.exe`
+
+**받는 사람 사용법**: `ISO_QC.exe` 를 `CIMS MARK-UP ISO` / `AS BUILT ISO` 폴더가 있는 폴더에 넣고 더블클릭.
+처음 실행 시 압축을 푸느라 10초 정도 걸리고, 백신이 검사할 수 있습니다.
 
 ## 판정 방법
 
