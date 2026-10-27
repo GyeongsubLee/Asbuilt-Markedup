@@ -43,6 +43,11 @@ def parse_args(argv=None):
 
 
 def main(argv=None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:  # never crash on a console that cannot show Korean
+            stream.reconfigure(errors="replace")
+        except Exception:
+            pass
     args = parse_args(argv)
     base = os.path.abspath(args.base or _program_dir())
     markup_dir, asbuilt_dir = find_dirs(base)
