@@ -9,6 +9,13 @@ import pymupdf as fitz
 
 from .config import SHX_KEYS
 
+# MuPDF prints harmless warnings ("cannot set rect ...") straight to the console
+try:
+    fitz.TOOLS.mupdf_display_errors(False)
+    fitz.TOOLS.mupdf_display_warnings(False)
+except Exception:
+    pass
+
 _NUM_RE = re.compile(r"[+-]?\d+(?:\.\d+)?")
 _STRIP_CHARS = ",;:\"'`"
 
@@ -74,6 +81,7 @@ def is_markup_color(rgb) -> bool:
 def page_words(page: fitz.Page) -> list[Word]:
     """Words of the page content (annotations are NOT included), with colour."""
     words: list[Word] = []
+    M = page.rotation_matrix
     raw = page.get_text("rawdict", flags=fitz.TEXT_PRESERVE_WHITESPACE)
     for bno, block in enumerate(raw.get("blocks", [])):
         if block.get("type") != 0:
@@ -90,7 +98,7 @@ def page_words(page: fitz.Page) -> list[Word]:
                             words.append(Word(txt, norm_token(txt), cur_rect, bno, lno, rgb))
                         cur_txt, cur_rect = [], None
                         continue
-                    r = fitz.Rect(ch["bbox"])
+                    r = fitz.Rect(ch["bbox"]) * M
                     cur_txt.append(c)
                     cur_rect = r if cur_rect is None else cur_rect | r
     return words
@@ -112,7 +120,7 @@ def shx_words(page: fitz.Page) -> list[Word]:
         toks = txt.split()
         if not toks:
             continue
-        r = annot.rect
+        r = annot.rect * page.rotation_matrix
         w = r.width / max(len(toks), 1)
         for j, t in enumerate(toks):
             wr = fitz.Rect(r.x0 + j * w, r.y0, r.x0 + (j + 1) * w, r.y1)
@@ -128,8 +136,20 @@ def group_lines(words: list[Word]) -> dict:
     return lines
 
 
+def disp_point(page: fitz.Page, p) -> fitz.Point:
+    """Unrotated page coordinates (text, annotations, drawings) -> displayed page
+    coordinates (page.rect, rendering clips)."""
+    return fitz.Point(p) * page.rotation_matrix
+
+
+def disp_rect(page: fitz.Page, r) -> fitz.Rect:
+    return fitz.Rect(r) * page.rotation_matrix
+
+
 def open_pdf(path: str, strip_annots: bool = False) -> fitz.Document:
-    """Open a PDF with page rotation removed.
+    """Open a PDF. Rotated pages are left untouched (remove_rotation() fails on some
+    Polygon / PolyLine annotations); extracted coordinates are mapped to the displayed
+    page with disp_point / disp_rect instead.
 
     strip_annots=True deletes every annotation (in memory only) so that text and
     drawing extraction see the printed drawing only - some PyMuPDF versions include
@@ -137,11 +157,12 @@ def open_pdf(path: str, strip_annots: bool = False) -> fitz.Document:
     doc = fitz.open(path)
     if doc.needs_pass:
         doc.authenticate("")
-    for page in doc:
-        if page.rotation:
-            page.remove_rotation()
-        if strip_annots:
+    if strip_annots:
+        for page in doc:
             annot = page.first_annot
             while annot:
-                annot = page.delete_annot(annot)
+                try:
+                    annot = page.delete_annot(annot)
+                except Exception:
+                    annot = annot.next
     return doc

@@ -9,12 +9,19 @@ sys.path.insert(0, os.path.dirname(__file__))
 import openpyxl  # noqa: E402
 
 import make_samples  # noqa: E402
+from rotate_copy import rotate_copy  # noqa: E402
 from isoqc.cli import main  # noqa: E402
 
 
 def _run():
     tmp = tempfile.mkdtemp()
     make_samples.main(tmp)
+    # same NG pair, but stored with /Rotate like CAD-exported sheets
+    mk, ab = os.path.join(tmp, "CIMS MARK-UP ISO"), os.path.join(tmp, "AS BUILT ISO")
+    rotate_copy(os.path.join(mk, "ISO-1TC-PL-2302-30-025-01_2A.pdf"),
+                os.path.join(mk, "ISO-1TC-PL-2302-30-027-01_2A.pdf"), 90)
+    rotate_copy(os.path.join(ab, "ISO-1TC-PL-2302-30-025-01_Sheet1-Model.pdf"),
+                os.path.join(ab, "ISO-1TC-PL-2302-30-027-01_Sheet1-Model.pdf"), 270)
     out = os.path.join(tmp, "out")
     assert main(["--base", tmp, "--out", out, "--workers", "1", "--no-pause"]) == 0
     wb = openpyxl.load_workbook(os.path.join(out, "ISO_QC_Report.xlsx"))
@@ -38,6 +45,10 @@ def test_samples():
                 ("5", "10"), ("N", "Y")]:
         assert ok[key] == "반영", (key, ok)
         assert ng[key] == ("미반영" if key in expected_ng else "반영"), (key, ng)
+    rot = {(old, new): st for _, old, new, st in detail["ISO-1TC-PL-2302-30-027-01"]}
+    assert summary["ISO-1TC-PL-2302-30-027-01"] == "NG"
+    for key, st in ng.items():
+        assert rot.get(key) == st, (key, rot)
     # SHX helper annotations and the signature never become checked items
     assert all(st != "미반영" for _, _, _, st in detail["ISO-1TC-PL-2302-30-024-01"])
 

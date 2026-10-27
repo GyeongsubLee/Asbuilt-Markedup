@@ -20,7 +20,7 @@ from dataclasses import dataclass, field
 import pymupdf as fitz
 
 from .config import Options
-from .pdftext import group_lines, is_markup_color, is_shx_annot, rc, tokens
+from .pdftext import disp_point, disp_rect, group_lines, is_markup_color, is_shx_annot, rc, tokens
 
 SKIP_TYPES = {"Link", "Widget", "Popup", "FileAttachment", "Sound", "Movie",
               "Screen", "PrinterMark", "TrapNet", "Watermark", "3D", "Projection"}
@@ -157,7 +157,9 @@ def _annot_text(annot: fitz.Annot) -> str:
 
 
 def _freetext_geometry(doc: fitz.Document, annot: fitz.Annot):
-    """Return (text box, anchor point) honouring /RD and callout /CL."""
+    """Return (text box, anchor point) in displayed page coordinates, honouring /RD
+    and callout /CL."""
+    page = annot.parent
     rect = fitz.Rect(annot.rect)
     box = fitz.Rect(rect)
     try:
@@ -172,105 +174,109 @@ def _freetext_geometry(doc: fitz.Document, annot: fitz.Annot):
         if kind == "array":
             nums = [float(v) for v in val.strip("[]").split()]
             if len(nums) >= 4:
-                # PDF user space (origin bottom-left) -> MuPDF space
-                page = annot.parent
+                # PDF user space (origin bottom-left) -> unrotated MuPDF space
                 m = page.transformation_matrix
                 p = fitz.Point(nums[0], nums[1]) * m
                 end = fitz.Point(nums[-2], nums[-1]) * m
-                diag = abs(page.rect.br - page.rect.tl)
+                prect = page.rect * page.derotation_matrix
+                diag = abs(prect.br - prect.tl)
                 # some writers emit a dummy callout from the page origin; a real one
                 # ends at the text box and starts reasonably close to it
-                corners = (page.rect.tl, page.rect.tr, page.rect.bl, page.rect.br)
+                corners = (prect.tl, prect.tr, prect.bl, prect.br)
                 if (_dist_rect(end, box) < 15 and _dist_rect(p, box) < diag * 0.3
                         and min(abs(p - c) for c in corners) > 1):
                     anchor = p
     except Exception:
         anchor = None
-    return box, anchor
+    return disp_rect(page, box), (disp_point(page, anchor) if anchor is not None else None)
 
 
 def _collect_annotations(page: fitz.Page, base_words, opts: Options):
     texts, strikes, shapes, leaders = [], [], [], []
     doc = page.parent
     for annot in page.annots() or []:
-        tname = annot.type[1]
-        if tname in SKIP_TYPES or is_shx_annot(annot):
-            continue
-        info = annot.info or {}
-        author = info.get("title", "") or ""
-        text = _annot_text(annot)
-        rect = fitz.Rect(annot.rect)
-        colors = annot.colors or {}
-        filled = bool(colors.get("fill"))
-
-        if tname == "FreeText":
-            if not text:
+        try:
+            tname = annot.type[1]
+            if tname in SKIP_TYPES or is_shx_annot(annot):
                 continue
-            box, anchor = _freetext_geometry(doc, annot)
-            covered = [w for w in _words_in_rect(base_words, box, 0.5)]
-            texts.append(TextMark(text, box, anchor if anchor is not None else rc(box),
-                                  covered, "FreeText", author))
-        elif tname in ("StrikeOut",):
-            verts = annot.vertices or []
-            hit = []
-            for i in range(0, len(verts) - 3, 4):
-                q = fitz.Quad(verts[i:i + 4]).rect
-                hit += _words_in_rect(base_words, q)
-            if hit:
-                strikes.append(StrikeMark(hit, _union(w.rect for w in hit), tname, author))
-            if text:
-                texts.append(TextMark(text, rect, rc(rect), [], tname + " note", author))
-        elif tname == "Line":
-            v = annot.vertices or []
-            if len(v) >= 2:
-                p0, p1 = fitz.Point(v[0]), fitz.Point(v[-1])
-                hit = _segment_hits(base_words, p0, p1)
+            info = annot.info or {}
+            author = info.get("title", "") or ""
+            text = _annot_text(annot)
+            rect = disp_rect(page, annot.rect)
+            colors = annot.colors or {}
+            filled = bool(colors.get("fill"))
+
+            if tname == "FreeText":
+                if not text:
+                    continue
+                box, anchor = _freetext_geometry(doc, annot)
+                covered = [w for w in _words_in_rect(base_words, box, 0.5)]
+                texts.append(TextMark(text, box, anchor if anchor is not None else rc(box),
+                                      covered, "FreeText", author))
+            elif tname in ("StrikeOut",):
+                verts = [disp_point(page, p) for p in annot.vertices or []]
+                hit = []
+                for i in range(0, len(verts) - 3, 4):
+                    q = fitz.Quad(verts[i:i + 4]).rect
+                    hit += _words_in_rect(base_words, q)
                 if hit:
-                    strikes.append(StrikeMark(hit, _union(w.rect for w in hit), "Line", author))
+                    strikes.append(StrikeMark(hit, _union(w.rect for w in hit), tname, author))
+                if text:
+                    texts.append(TextMark(text, rect, rc(rect), [], tname + " note", author))
+            elif tname == "Line":
+                v = [disp_point(page, p) for p in annot.vertices or []]
+                if len(v) >= 2:
+                    p0, p1 = fitz.Point(v[0]), fitz.Point(v[-1])
+                    hit = _segment_hits(base_words, p0, p1)
+                    if hit:
+                        strikes.append(StrikeMark(hit, _union(w.rect for w in hit), "Line", author))
+                    else:
+                        leaders.append((p0, p1))
+                if text:
+                    texts.append(TextMark(text, rect, rc(rect), [], "Line note", author))
+            elif tname == "Ink":
+                strokes = [[disp_point(page, p) for p in st] for st in annot.vertices or []]
+                straight_hits = []
+                curvy = False
+                for stroke in strokes:
+                    if len(stroke) >= 2 and _straightness(stroke) < 0.08:
+                        straight_hits += _segment_hits(base_words, fitz.Point(stroke[0]), fitz.Point(stroke[-1]))
+                    else:
+                        curvy = True
+                if straight_hits and not curvy:
+                    strikes.append(StrikeMark(straight_hits, _union(w.rect for w in straight_hits), "Ink", author))
                 else:
-                    leaders.append((p0, p1))
-            if text:
-                texts.append(TextMark(text, rect, rc(rect), [], "Line note", author))
-        elif tname == "Ink":
-            strokes = annot.vertices or []
-            straight_hits = []
-            curvy = False
-            for stroke in strokes:
-                if len(stroke) >= 2 and _straightness(stroke) < 0.08:
-                    straight_hits += _segment_hits(base_words, fitz.Point(stroke[0]), fitz.Point(stroke[-1]))
+                    shapes.append(ShapeMark("sign", rect, "Ink", author))
+            elif tname == "Stamp":
+                shapes.append(ShapeMark("sign", rect, "Stamp", author))
+                if text:
+                    texts.append(TextMark(text, rect, rc(rect), [], "Stamp", author, used=True))
+            elif tname in ENCLOSE_TYPES:
+                r = fitz.Rect(rect)
+                if tname in ("Polygon", "PolyLine") and annot.vertices:
+                    pts = [disp_point(page, p) for p in annot.vertices]
+                    r = fitz.Rect(pts[0], pts[0])
+                    for p in pts:
+                        r |= p
+                shapes.append(ShapeMark("enclose", r, tname, author, filled))
+                if text:
+                    texts.append(TextMark(text, r, rc(r), [], tname + " note", author))
+            elif tname in ("Text", "Caret", "Highlight", "Underline", "Squiggly"):
+                if tname in ("Highlight", "Underline", "Squiggly"):
+                    shapes.append(ShapeMark("enclose", rect, tname, author))
+                if text:
+                    texts.append(TextMark(text, rect, rc(rect), [], tname, author))
+            elif tname == "Redact":
+                hit = _words_in_rect(base_words, rect)
+                if hit:
+                    strikes.append(StrikeMark(hit, rect, tname, author))
+            else:
+                if text:
+                    texts.append(TextMark(text, rect, rc(rect), [], tname, author))
                 else:
-                    curvy = True
-            if straight_hits and not curvy:
-                strikes.append(StrikeMark(straight_hits, _union(w.rect for w in straight_hits), "Ink", author))
-            else:
-                shapes.append(ShapeMark("sign", rect, "Ink", author))
-        elif tname == "Stamp":
-            shapes.append(ShapeMark("sign", rect, "Stamp", author))
-            if text:
-                texts.append(TextMark(text, rect, rc(rect), [], "Stamp", author, used=True))
-        elif tname in ENCLOSE_TYPES:
-            r = fitz.Rect(rect)
-            if tname in ("Polygon", "PolyLine") and annot.vertices:
-                r = fitz.Rect(fitz.Point(annot.vertices[0]), fitz.Point(annot.vertices[0]))
-                for p in annot.vertices:
-                    r |= fitz.Point(p)
-            shapes.append(ShapeMark("enclose", r, tname, author, filled))
-            if text:
-                texts.append(TextMark(text, r, rc(r), [], tname + " note", author))
-        elif tname in ("Text", "Caret", "Highlight", "Underline", "Squiggly"):
-            if tname in ("Highlight", "Underline", "Squiggly"):
-                shapes.append(ShapeMark("enclose", rect, tname, author))
-            if text:
-                texts.append(TextMark(text, rect, rc(rect), [], tname, author))
-        elif tname == "Redact":
-            hit = _words_in_rect(base_words, rect)
-            if hit:
-                strikes.append(StrikeMark(hit, rect, tname, author))
-        else:
-            if text:
-                texts.append(TextMark(text, rect, rc(rect), [], tname, author))
-            else:
-                shapes.append(ShapeMark("enclose", rect, tname, author))
+                    shapes.append(ShapeMark("enclose", rect, tname, author))
+        except Exception:  # one broken annotation must not fail the whole sheet
+            continue
 
     # FreeText without a callout but with a separate leader Line touching it
     for t in texts:
@@ -308,18 +314,18 @@ def _collect_flattened(page: fitz.Page, words, base_words):
         if not is_markup_color(col):
             continue
         items = d.get("items", [])
-        r = fitz.Rect(d["rect"])
+        r = disp_rect(page, d["rect"])
         curves = sum(1 for it in items if it[0] == "c")
         if curves >= 6 or (r.width > 25 and r.height > 25 and len(items) >= 4):
             shapes.append(ShapeMark("enclose", r, "Flattened cloud"))
             continue
         for it in items:
             if it[0] == "l":
-                hit = _segment_hits(base_words, fitz.Point(it[1]), fitz.Point(it[2]))
+                hit = _segment_hits(base_words, disp_point(page, it[1]), disp_point(page, it[2]))
                 if hit:
                     strikes.append(StrikeMark(hit, _union(w.rect for w in hit), "Flattened line"))
             elif it[0] == "re":
-                rr = fitz.Rect(it[1])
+                rr = disp_rect(page, it[1])
                 if rr.width > 6 and rr.height > 6:
                     shapes.append(ShapeMark("enclose", rr, "Flattened box", filled=bool(d.get("fill"))))
     return texts, strikes, shapes
